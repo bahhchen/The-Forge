@@ -319,14 +319,19 @@ if(TF_GFX_BACKEND STREQUAL "D3D12")
     )
 endif()
 
-# gpu.data for hardware detection
+# Files that ship with a renamed destination basename. The-Forge's
+# GraphicsConfig.cpp opens "gpu.data" via RD_OTHER_FILES, but the source file
+# in the repo is platform-prefixed (pc_gpu.data, android_gpu.data, ...), so we
+# rename it during the copy step. Format: "<src>|<dest_name>".
+set(TF_RUNTIME_RENAMED_FILES "")
 if(TF_PLATFORM STREQUAL "WINDOWS")
-    list(APPEND TF_RUNTIME_DLLS
-        "${TF_COMMON}/OS/Windows/pc_gpu.data"
+    list(APPEND TF_RUNTIME_RENAMED_FILES
+        "${TF_COMMON}/OS/Windows/pc_gpu.data|gpu.data"
     )
 endif()
 
-set(THEFORGE_RUNTIME_FILES ${TF_RUNTIME_DLLS} CACHE INTERNAL "The-Forge runtime files to copy")
+set(THEFORGE_RUNTIME_FILES         ${TF_RUNTIME_DLLS}          CACHE INTERNAL "The-Forge runtime files to copy")
+set(THEFORGE_RUNTIME_RENAMED_FILES ${TF_RUNTIME_RENAMED_FILES} CACHE INTERNAL "The-Forge runtime files to copy with a renamed destination")
 
 # Helper function: copy runtime files to a target's output directory
 function(theforge_copy_runtime_files TARGET_NAME)
@@ -339,6 +344,20 @@ function(theforge_copy_runtime_files TARGET_NAME)
                     "${runtime_file}"
                     "$<TARGET_FILE_DIR:${TARGET_NAME}>/${_fname}"
                 COMMENT "Copying ${_fname}"
+            )
+        endif()
+    endforeach()
+    foreach(_pair IN LISTS THEFORGE_RUNTIME_RENAMED_FILES)
+        string(REPLACE "|" ";" _parts "${_pair}")
+        list(GET _parts 0 _src)
+        list(GET _parts 1 _dest_name)
+        if(EXISTS "${_src}")
+            add_custom_command(
+                TARGET ${TARGET_NAME} POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${_src}"
+                    "$<TARGET_FILE_DIR:${TARGET_NAME}>/${_dest_name}"
+                COMMENT "Copying ${_dest_name}"
             )
         endif()
     endforeach()
