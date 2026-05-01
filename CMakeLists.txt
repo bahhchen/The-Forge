@@ -9,12 +9,17 @@ set(TF_COMMON "${TF_ROOT}/Common_3")
 # Options
 # ---------------------------------------------------------------------------
 option(TF_USE_VULKAN  "Build Vulkan backend (instead of D3D12 on Windows)" OFF)
+option(TF_USE_METAL   "Build Metal backend on Apple platforms"             OFF)
 option(TF_BUILD_TOOLS "Include Network / ReloadServer in Renderer target"  ON)
 
 # ---------------------------------------------------------------------------
 # Detect platform
 # ---------------------------------------------------------------------------
-if(WIN32)
+if(ANDROID)
+    set(TF_PLATFORM "ANDROID")
+elseif(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+    set(TF_PLATFORM "IOS")
+elseif(WIN32)
     set(TF_PLATFORM "WINDOWS")
 elseif(APPLE)
     set(TF_PLATFORM "DARWIN")
@@ -22,6 +27,10 @@ elseif(UNIX)
     set(TF_PLATFORM "LINUX")
 else()
     message(FATAL_ERROR "Unsupported platform")
+endif()
+
+if((TF_PLATFORM STREQUAL "DARWIN" OR TF_PLATFORM STREQUAL "IOS") AND TF_USE_METAL)
+    enable_language(OBJC OBJCXX)
 endif()
 
 # ===========================================================================
@@ -99,14 +108,41 @@ elseif(TF_PLATFORM STREQUAL "LINUX")
         ${TF_COMMON}/OS/ThirdParty/OpenSource/cpu_features/src/impl_x86_linux_or_android.c
         ${TF_COMMON}/OS/ThirdParty/OpenSource/hidapi/linux/hid.c
     )
-elseif(TF_PLATFORM STREQUAL "DARWIN")
-    file(GLOB TF_OS_DARWIN_SOURCES
-        "${TF_COMMON}/OS/Darwin/*.c"
-        "${TF_COMMON}/OS/Darwin/*.cpp"
-        "${TF_COMMON}/OS/Darwin/*.m"
-        "${TF_COMMON}/OS/Darwin/*.mm"
+elseif(TF_PLATFORM STREQUAL "ANDROID")
+    list(APPEND TF_OS_SOURCES
+        ${TF_COMMON}/OS/Android/android_native_app_glue.c
+        ${TF_COMMON}/OS/Android/AndroidBase.cpp
+        ${TF_COMMON}/OS/Android/AndroidFileSystem.cpp
+        ${TF_COMMON}/OS/Android/AndroidInput.cpp
+        ${TF_COMMON}/OS/Android/AndroidLog.c
+        ${TF_COMMON}/OS/Android/AndroidThread.c
+        ${TF_COMMON}/OS/Android/AndroidTime.c
+        ${TF_COMMON}/OS/Android/AndroidToolsFileSystem.cpp
+        ${TF_COMMON}/OS/Android/AndroidWindow.cpp
+        ${TF_COMMON}/OS/ThirdParty/OpenSource/cpu_features/src/impl_x86_linux_or_android.c
     )
-    list(APPEND TF_OS_SOURCES ${TF_OS_DARWIN_SOURCES})
+elseif(TF_PLATFORM STREQUAL "DARWIN")
+    list(APPEND TF_OS_SOURCES
+        ${TF_COMMON}/OS/Darwin/CocoaFileSystem.mm
+        ${TF_COMMON}/OS/Darwin/CocoaToolsFileSystem.mm
+        ${TF_COMMON}/OS/Darwin/DarwinInput.mm
+        ${TF_COMMON}/OS/Darwin/DarwinLog.c
+        ${TF_COMMON}/OS/Darwin/DarwinThread.c
+        ${TF_COMMON}/OS/Darwin/macOSAppDelegate.m
+        ${TF_COMMON}/OS/Darwin/macOSBase.mm
+        ${TF_COMMON}/OS/Darwin/macOSWindow.mm
+    )
+elseif(TF_PLATFORM STREQUAL "IOS")
+    list(APPEND TF_OS_SOURCES
+        ${TF_COMMON}/OS/Darwin/CocoaFileSystem.mm
+        ${TF_COMMON}/OS/Darwin/DarwinInput.mm
+        ${TF_COMMON}/OS/Darwin/DarwinLog.c
+        ${TF_COMMON}/OS/Darwin/DarwinThread.c
+        ${TF_COMMON}/OS/Darwin/iOSAppDelegate.m
+        ${TF_COMMON}/OS/Darwin/iOSBase.mm
+        ${TF_COMMON}/OS/Darwin/iOSToolsFileSystem.mm
+        ${TF_COMMON}/OS/Darwin/iOSWindow.mm
+    )
 endif()
 
 # --- Utilities --------------------------------------------------------------
@@ -122,7 +158,7 @@ list(APPEND TF_OS_SOURCES
     ${TF_COMMON}/Utilities/ThirdParty/OpenSource/bstrlib/bstrlib.c
     ${TF_COMMON}/Utilities/ThirdParty/OpenSource/lz4/lz4.c
 )
-if(NOT WIN32)
+if(NOT WIN32 AND NOT TF_PLATFORM STREQUAL "ANDROID")
     list(APPEND TF_OS_SOURCES
         ${TF_COMMON}/Utilities/FileSystem/UnixFileSystem.c
     )
@@ -195,6 +231,12 @@ elseif(TF_PLATFORM STREQUAL "LINUX")
             X11
             Xcursor
     )
+elseif(TF_PLATFORM STREQUAL "ANDROID")
+    target_link_libraries(TheForge_OS
+        PUBLIC
+            android
+            log
+    )
 endif()
 
 # ===========================================================================
@@ -224,6 +266,13 @@ if(TF_PLATFORM STREQUAL "WINDOWS" AND NOT TF_USE_VULKAN)
         ${TF_COMMON}/Graphics/Direct3D12/Direct3D12_Cxx.cpp
     )
     set(TF_GFX_BACKEND "D3D12")
+elseif(TF_USE_METAL)
+    # Metal
+    list(APPEND TF_RENDERER_SOURCES
+        ${TF_COMMON}/Graphics/Metal/MetalRenderer.mm
+        ${TF_COMMON}/Graphics/Metal/MetalRaytracing.mm
+    )
+    set(TF_GFX_BACKEND "METAL")
 else()
     # Vulkan
     list(APPEND TF_RENDERER_SOURCES
@@ -297,11 +346,50 @@ elseif(TF_GFX_BACKEND STREQUAL "VULKAN")
     target_compile_definitions(TheForge_Renderer PUBLIC
         FORGE_EXPLICIT_RENDERER_API_VULKAN
     )
-    if(DEFINED ENV{VULKAN_SDK})
-        target_include_directories(TheForge_Renderer PRIVATE $ENV{VULKAN_SDK}/Include)
-        target_link_directories(TheForge_Renderer PUBLIC $ENV{VULKAN_SDK}/Lib)
+    find_package(Vulkan QUIET)
+    if(Vulkan_FOUND)
+        target_link_libraries(TheForge_Renderer PRIVATE Vulkan::Vulkan)
+    else()
+        if(DEFINED ENV{VULKAN_SDK})
+            target_include_directories(TheForge_Renderer PRIVATE
+                $ENV{VULKAN_SDK}/Include
+                $ENV{VULKAN_SDK}/include
+            )
+            if(WIN32)
+                target_link_directories(TheForge_Renderer PUBLIC $ENV{VULKAN_SDK}/Lib)
+            elseif(APPLE)
+                target_link_directories(TheForge_Renderer PUBLIC
+                    $ENV{VULKAN_SDK}/Lib
+                    $ENV{VULKAN_SDK}/lib
+                    $ENV{VULKAN_SDK}/macOS/lib
+                )
+            elseif(UNIX)
+                target_link_directories(TheForge_Renderer PUBLIC
+                    $ENV{VULKAN_SDK}/Lib
+                    $ENV{VULKAN_SDK}/lib
+                    $ENV{VULKAN_SDK}/x86_64/lib
+                )
+            endif()
+        endif()
+        if(WIN32)
+            target_link_libraries(TheForge_Renderer PRIVATE vulkan-1)
+        else()
+            target_link_libraries(TheForge_Renderer PRIVATE vulkan)
+        endif()
     endif()
-    target_link_libraries(TheForge_Renderer PRIVATE vulkan-1)
+elseif(TF_GFX_BACKEND STREQUAL "METAL")
+    target_link_libraries(TheForge_Renderer
+        PUBLIC
+            "-framework Foundation"
+            "-framework Metal"
+            "-framework MetalKit"
+            "-framework QuartzCore"
+    )
+    if(TF_PLATFORM STREQUAL "IOS")
+        target_link_libraries(TheForge_Renderer PUBLIC "-framework UIKit")
+    else()
+        target_link_libraries(TheForge_Renderer PUBLIC "-framework AppKit")
+    endif()
 endif()
 
 # ===========================================================================
@@ -327,6 +415,14 @@ set(TF_RUNTIME_RENAMED_FILES "")
 if(TF_PLATFORM STREQUAL "WINDOWS")
     list(APPEND TF_RUNTIME_RENAMED_FILES
         "${TF_COMMON}/OS/Windows/pc_gpu.data|gpu.data"
+    )
+elseif(TF_PLATFORM STREQUAL "ANDROID")
+    list(APPEND TF_RUNTIME_RENAMED_FILES
+        "${TF_COMMON}/OS/Android/android_gpu.data|gpu.data"
+    )
+elseif(TF_PLATFORM STREQUAL "DARWIN" OR TF_PLATFORM STREQUAL "IOS")
+    list(APPEND TF_RUNTIME_RENAMED_FILES
+        "${TF_COMMON}/OS/Darwin/apple_gpu.data|gpu.data"
     )
 endif()
 
