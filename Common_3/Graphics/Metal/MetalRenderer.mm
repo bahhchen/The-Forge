@@ -3723,12 +3723,13 @@ void beginCmd(Cmd* pCmd)
     pCmd->mPipelineType = PIPELINE_TYPE_UNDEFINED;
 }
 
-void endCmd(Cmd* pCmd)
+GraphicsOperationResult endCmd(Cmd* pCmd)
 {
     @autoreleasepool
     {
         util_end_current_encoders(pCmd, true);
     }
+    return GRAPHICS_OPERATION_SUCCESS;
 }
 
 void cmdBindRenderTargets(Cmd* pCmd, const BindRenderTargetsDesc* pDesc)
@@ -4793,7 +4794,7 @@ void queueSubmit(Queue* pQueue, const QueueSubmitDesc* pDesc)
     }
 }
 
-void queuePresent(Queue* pQueue, const QueuePresentDesc* pDesc)
+GraphicsOperationResult queuePresent(Queue* pQueue, const QueuePresentDesc* pDesc)
 {
     ASSERT(pQueue);
     ASSERT(pDesc);
@@ -4803,6 +4804,10 @@ void queuePresent(Queue* pQueue, const QueuePresentDesc* pDesc)
     {
         SwapChain* pSwapChain = pDesc->pSwapChain;
         ASSERT(pQueue->pCommandQueue != nil);
+        if (pSwapChain->mMTKDrawable == nil)
+        {
+            return GRAPHICS_OPERATION_OUT_OF_DATE;
+        }
 
 #if defined(AUTOMATED_TESTING)
         if (isScreenshotCaptureRequested())
@@ -4820,6 +4825,10 @@ void queuePresent(Queue* pQueue, const QueuePresentDesc* pDesc)
 
         // after committing a command buffer no more commands can be encoded on it: create a new command buffer for future commands
         pSwapChain->presentCommandBuffer = [pQueue->pCommandQueue commandBuffer];
+        if (pSwapChain->presentCommandBuffer == nil)
+        {
+            return GRAPHICS_OPERATION_FAILED;
+        }
         pSwapChain->presentCommandBuffer.label = @"PRESENT";
 
         [pSwapChain->presentCommandBuffer presentDrawable:pSwapChain->mMTKDrawable];
@@ -4830,6 +4839,7 @@ void queuePresent(Queue* pQueue, const QueuePresentDesc* pDesc)
         [pSwapChain->presentCommandBuffer commit];
         pSwapChain->presentCommandBuffer = nil;
     }
+    return GRAPHICS_OPERATION_SUCCESS;
 }
 
 void waitForFences(Renderer* pRenderer, uint32_t fenceCount, Fence** ppFences)

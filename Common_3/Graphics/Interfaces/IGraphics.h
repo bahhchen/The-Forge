@@ -1599,6 +1599,17 @@ typedef enum FenceStatus
     FENCE_STATUS_NOTSUBMITTED,
 } FenceStatus;
 
+// Immediate command-close / presentation outcome. Submission completion and
+// asynchronous GPU execution are observed separately through fences.
+typedef enum GraphicsOperationResult
+{
+    GRAPHICS_OPERATION_SUCCESS = 0,
+    GRAPHICS_OPERATION_OUT_OF_DATE,
+    GRAPHICS_OPERATION_OCCLUDED,
+    GRAPHICS_OPERATION_DEVICE_LOST,
+    GRAPHICS_OPERATION_FAILED,
+} GraphicsOperationResult;
+
 typedef struct Fence
 {
 #if defined(DIRECT3D12)
@@ -2880,7 +2891,7 @@ void updateDescriptorSet(Renderer* pRenderer, uint32_t index, DescriptorSet* pDe
 // command buffer functions
 void resetCmdPool(Renderer* pRenderer, CmdPool* pCmdPool);
 void beginCmd(Cmd* pCmd);
-void endCmd(Cmd* pCmd);
+GraphicsOperationResult endCmd(Cmd* pCmd);
 void cmdBindRenderTargets(Cmd* pCmd, const BindRenderTargetsDesc* pDesc);
 void cmdSetViewport(Cmd* pCmd, float x, float y, float width, float height, float minDepth, float maxDepth);
 void cmdSetScissor(Cmd* pCmd, uint32_t x, uint32_t y, uint32_t width, uint32_t height);
@@ -2901,7 +2912,7 @@ void cmdResourceBarrier(Cmd* pCmd, uint32_t bufferBarrierCount, BufferBarrier* p
 // queue/fence/swapchain functions
 void acquireNextImage(Renderer* pRenderer, SwapChain* pSwapChain, Semaphore* pSignalSemaphore, Fence* pFence, uint32_t* pImageIndex);
 void queueSubmit(Queue* pQueue, const QueueSubmitDesc* pDesc);
-void queuePresent(Queue* pQueue, const QueuePresentDesc* pDesc);
+GraphicsOperationResult queuePresent(Queue* pQueue, const QueuePresentDesc* pDesc);
 void waitQueueIdle(Queue* pQueue);
 void getFenceStatus(Renderer* pRenderer, Fence* pFence, FenceStatus* pFenceStatus);
 void waitForFences(Renderer* pRenderer, uint32_t fenceCount, Fence** ppFences);

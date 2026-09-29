@@ -7695,7 +7695,7 @@ void beginCmd(Cmd* pCmd)
     pCmd->mVk.pBoundPipelineLayout = NULL;
 }
 
-void endCmd(Cmd* pCmd)
+GraphicsOperationResult endCmd(Cmd* pCmd)
 {
     ASSERT(pCmd);
     ASSERT(VK_NULL_HANDLE != pCmd->mVk.pCmdBuf);
@@ -7712,7 +7712,18 @@ void endCmd(Cmd* pCmd)
     }
 
     Renderer* pRenderer = pCmd->pRenderer;
-    CHECK_VKRESULT(vkEndCommandBuffer(pCmd->mVk.pCmdBuf));
+    VkResult closeResult = vkEndCommandBuffer(pCmd->mVk.pCmdBuf);
+    if (closeResult == VK_ERROR_DEVICE_LOST)
+    {
+        OnVkDeviceLost(pRenderer);
+        return GRAPHICS_OPERATION_DEVICE_LOST;
+    }
+    if (closeResult != VK_SUCCESS)
+    {
+        LOGF(eERROR, "vkEndCommandBuffer failed with VkResult: %d", closeResult);
+        return GRAPHICS_OPERATION_FAILED;
+    }
+    return GRAPHICS_OPERATION_SUCCESS;
 }
 
 void cmdBindRenderTargetsDynamic(Cmd* pCmd, const BindRenderTargetsDesc* pDesc)
@@ -8913,7 +8924,7 @@ void queueSubmit(Queue* pQueue, const QueueSubmitDesc* pDesc)
     releaseMutex(pQueue->mVk.pSubmitMutex);
 }
 
-void queuePresent(Queue* pQueue, const QueuePresentDesc* pDesc)
+GraphicsOperationResult queuePresent(Queue* pQueue, const QueuePresentDesc* pDesc)
 {
     ASSERT(pDesc);
 
@@ -8938,7 +8949,7 @@ void queuePresent(Queue* pQueue, const QueuePresentDesc* pDesc)
 
 #if defined(QUEST_VR)
         OpenXRVKQueuePresent(pDesc);
-        return;
+        return GRAPHICS_OPERATION_SUCCESS;
 #endif // QUEST_VR
 
         ASSERT(pQueue);
@@ -8988,8 +8999,10 @@ void queuePresent(Queue* pQueue, const QueuePresentDesc* pDesc)
             vk_res = vkQueuePresentKHR(pSwapChain->mVk.pPresentQueue ? pSwapChain->mVk.pPresentQueue : pQueue->mVk.pQueue, &present_info);
         }
 
+        GraphicsOperationResult result = GRAPHICS_OPERATION_SUCCESS;
         if (vk_res == VK_ERROR_DEVICE_LOST)
         {
+            result = GRAPHICS_OPERATION_DEVICE_LOST;
             OnVkDeviceLost(pQueue->mVk.pRenderer);
             // Will crash normally on Android.
 #if defined(_WINDOWS)
@@ -9001,15 +9014,18 @@ void queuePresent(Queue* pQueue, const QueuePresentDesc* pDesc)
         }
         else if (vk_res == VK_ERROR_OUT_OF_DATE_KHR)
         {
-            // TODO : Fix bug where we get this error if window is closed before able to present queue.
+            result = GRAPHICS_OPERATION_OUT_OF_DATE;
         }
         else if (vk_res != VK_SUCCESS && vk_res != VK_SUBOPTIMAL_KHR)
         {
-            ASSERT(0);
+            LOGF(eERROR, "vkQueuePresentKHR failed with VkResult: %d", vk_res);
+            result = GRAPHICS_OPERATION_FAILED;
         }
 
         releaseMutex(pQueue->mVk.pSubmitMutex);
+        return result;
     }
+    return GRAPHICS_OPERATION_SUCCESS;
 }
 
 void waitForFences(Renderer* pRenderer, uint32_t fenceCount, Fence** ppFences)

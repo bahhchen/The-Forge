@@ -5296,12 +5296,23 @@ void beginCmd(Cmd* pCmd)
 #endif
 }
 
-void endCmd(Cmd* pCmd)
+GraphicsOperationResult endCmd(Cmd* pCmd)
 {
     ASSERT(pCmd);
     ASSERT(pCmd->mDx.pCmdList);
 
-    CHECK_HRESULT(COM_CALL(Close, pCmd->mDx.pCmdList));
+    const HRESULT closeHr = COM_CALL(Close, pCmd->mDx.pCmdList);
+    if (FAILED(closeHr))
+    {
+        LOGF(eERROR, "ID3D12GraphicsCommandList::Close failed with HRESULT: 0x%X", (uint32_t)closeHr);
+        if (pCmd->pRenderer && pCmd->pRenderer->mDx.pDevice &&
+            FAILED(COM_CALL(GetDeviceRemovedReason, pCmd->pRenderer->mDx.pDevice)))
+        {
+            return GRAPHICS_OPERATION_DEVICE_LOST;
+        }
+        return GRAPHICS_OPERATION_FAILED;
+    }
+    return GRAPHICS_OPERATION_SUCCESS;
 }
 
 void cmdBindRenderTargets(Cmd* pCmd, const BindRenderTargetsDesc* pDesc)
@@ -5954,11 +5965,11 @@ void queueSubmit(Queue* pQueue, const QueueSubmitDesc* pDesc)
     }
 }
 
-void queuePresent(Queue* pQueue, const QueuePresentDesc* pDesc)
+GraphicsOperationResult queuePresent(Queue* pQueue, const QueuePresentDesc* pDesc)
 {
     if (!pDesc->pSwapChain)
     {
-        return;
+        return GRAPHICS_OPERATION_SUCCESS;
     }
 
 #if defined(_WINDOWS) && defined(ENABLE_GRAPHICS_VALIDATION)
@@ -5990,6 +6001,13 @@ void queuePresent(Queue* pQueue, const QueuePresentDesc* pDesc)
 #endif
 
     HRESULT hr = hook_queue_present(pQueue, pSwapChain, pDesc->mIndex);
+    GraphicsOperationResult result = GRAPHICS_OPERATION_SUCCESS;
+#if defined(_WINDOWS)
+    if (hr == DXGI_STATUS_OCCLUDED)
+    {
+        result = GRAPHICS_OPERATION_OCCLUDED;
+    }
+#endif
 
 #if defined(_WINDOWS) && defined(ENABLE_GRAPHICS_VALIDATION)
     if (pRenderer->mDx.pDebugValidation && pRenderer->mDx.mSuppressMismatchingCommandListDuringPresent)
@@ -6000,41 +6018,50 @@ void queuePresent(Queue* pQueue, const QueuePresentDesc* pDesc)
 
     if (FAILED(hr))
     {
+        result = GRAPHICS_OPERATION_FAILED;
 #if defined(_WINDOWS)
         ID3D12Device* device = NULL;
-        COM_CALL(GetDevice, pSwapChain->mDx.pSwapChain, IID_ARGS(ID3D12Device, &device));
-        HRESULT removeHr = COM_CALL(GetDeviceRemovedReason, device);
-
-        if (!VERIFY(SUCCEEDED(removeHr)))
+        const HRESULT getDeviceHr = COM_CALL(GetDevice, pSwapChain->mDx.pSwapChain, IID_ARGS(ID3D12Device, &device));
+        if (SUCCEEDED(getDeviceHr) && device)
         {
-            threadSleep(5000); // Wait for a few seconds to allow the driver to come back online before doing a reset.
-            ResetDesc resetDesc;
-            resetDesc.mType = RESET_TYPE_DEVICE_LOST;
-            requestReset(&resetDesc);
-        }
+            const HRESULT removeHr = COM_CALL(GetDeviceRemovedReason, device);
+            if (FAILED(removeHr))
+            {
+                result = GRAPHICS_OPERATION_DEVICE_LOST;
+                threadSleep(5000); // Wait for a few seconds to allow the driver to come back online before doing a reset.
+                ResetDesc resetDesc;
+                resetDesc.mType = RESET_TYPE_DEVICE_LOST;
+                requestReset(&resetDesc);
+            }
 
 #if defined(USE_DRED)
-        ID3D12DeviceRemovedExtendedData* pDread;
-        if (SUCCEEDED(COM_CALL(QueryInterface, device, IID_ARGS(ID3D12DeviceRemovedExtendedData, &pDread))))
-        {
-            D3D12_DRED_AUTO_BREADCRUMBS_OUTPUT breadcrumbs;
-            if (SUCCEEDED(hook_GetAutoBreadcrumbsOutput(pDread, &breadcrumbs)))
+            ID3D12DeviceRemovedExtendedData* pDread = NULL;
+            if (SUCCEEDED(COM_CALL(QueryInterface, device, IID_ARGS(ID3D12DeviceRemovedExtendedData, &pDread))))
             {
-                LOGF(eINFO, "Gathered auto-breadcrumbs output.");
-            }
+                D3D12_DRED_AUTO_BREADCRUMBS_OUTPUT breadcrumbs;
+                if (SUCCEEDED(hook_GetAutoBreadcrumbsOutput(pDread, &breadcrumbs)))
+                {
+                    LOGF(eINFO, "Gathered auto-breadcrumbs output.");
+                }
 
-            D3D12_DRED_PAGE_FAULT_OUTPUT pageFault;
-            if (SUCCEEDED(hook_GetPageFaultAllocationOutput(pDread, &pageFault)))
-            {
-                LOGF(eINFO, "Gathered page fault allocation output.");
+                D3D12_DRED_PAGE_FAULT_OUTPUT pageFault;
+                if (SUCCEEDED(hook_GetPageFaultAllocationOutput(pDread, &pageFault)))
+                {
+                    LOGF(eINFO, "Gathered page fault allocation output.");
+                }
+                COM_CALL(Release, pDread);
             }
-        }
-        COM_CALL(Release, pDread);
 #endif
-        COM_CALL(Release, device);
+            COM_CALL(Release, device);
+        }
+        if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET || hr == DXGI_ERROR_DEVICE_HUNG)
+        {
+            result = GRAPHICS_OPERATION_DEVICE_LOST;
+        }
 #endif
         LOGF(eERROR, "Failed to present swapchain render target");
     }
+    return result;
 }
 
 static inline void GetFenceStatus(Fence* pFence, FenceStatus* pFenceStatus)
